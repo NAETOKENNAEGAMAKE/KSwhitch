@@ -24,7 +24,7 @@
 
 ## 사용자 설치 및 최초 실행 방법
 
-1. [GitHub Releases](https://github.com/NAETOKENNAEGAMAKE/KSwhitch/releases) (또는 저장소의 `KSwitch_v1.2.0.dmg`)에서 설치 파일을 다운로드해 열고, `KSwitch.app`을 **`응용 프로그램(Applications)`** 폴더로 드래그합니다.
+1. [GitHub Releases](https://github.com/NAETOKENNAEGAMAKE/KSwhitch/releases) (또는 저장소의 `KSwitch_v1.2.1.dmg`)에서 설치 파일을 다운로드해 열고, `KSwitch.app`을 **`응용 프로그램(Applications)`** 폴더로 드래그합니다.
 2. 개인 무료 오픈 배포(애플 공증 미적용) 앱이므로 최초 1회 실행 시 macOS 보안 경고가 뜰 수 있습니다:
    * **방법 A**: 실행 후 경고가 뜨면 `시스템 설정 > 개인정보 보호 및 보안` 하단에서 **"확인 없이 열기"**를 클릭합니다.
    * **방법 B**: 터미널에서 아래 명령어 실행 후 앱을 엽니다.
@@ -75,7 +75,7 @@ Karabiner 없이 가볍게 돌아가는 순수 Swift 메뉴바 앱을 직접 만
 - 상단 메뉴바에서 모든 옵션 개별 ON/OFF 및 로그인 자동 실행 지원
 
 [설치 방법]
-1. GitHub에서 KSwitch_v1.2.0.dmg 다운로드 후 응용 프로그램 폴더로 복사
+1. GitHub에서 KSwitch_v1.2.1.dmg 다운로드 후 응용 프로그램 폴더로 복사
    - 다운로드: https://github.com/NAETOKENNAEGAMAKE/KSwhitch/releases
 2. 개인 제작 무료 앱이라 최초 실행 시 [시스템 설정 > 개인정보 보호 및 보안 > 확인 없이 열기] 1회 클릭 필요
    (또는 터미널에서 `xattr -cr /Applications/KSwitch.app`)

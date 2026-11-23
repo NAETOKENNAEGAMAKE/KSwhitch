@@ -504,6 +504,9 @@ final class InputSourceManager {
     private var lastEnglishSourceID: String = "com.apple.keylayout.ABC"
     private var lastToggleTimestamp: TimeInterval = 0
     private var lastReportedID: String = ""
+    private var expectedIsKorean: Bool?
+    private var toggleGeneration: UInt64 = 0
+    private var retryWorkItems: [DispatchWorkItem] = []
 
     private init() {
         syncHistoryWithCurrent()
@@ -528,27 +531,54 @@ final class InputSourceManager {
     func toggleInputSource() {
         let performToggle = { [weak self] in
             guard let self = self else { return }
-            let current = self.currentSourceInfo()
-            let sources = self.selectableKeyboardSources()
 
-            let targetSource: TISInputSource?
-            if current.isKorean {
-                targetSource = self.findBestEnglishSource(in: sources)
-            } else {
-                targetSource = self.findBestKoreanSource(in: sources)
+            for item in self.retryWorkItems {
+                item.cancel()
             }
+            self.retryWorkItems.removeAll()
+
+            let now = ProcessInfo.processInfo.systemUptime
+            let currentIsKorean: Bool
+            if now - self.lastToggleTimestamp < 0.28, let pending = self.expectedIsKorean {
+                currentIsKorean = pending
+            } else {
+                currentIsKorean = self.currentSourceInfo().isKorean
+            }
+
+            let targetIsKorean = !currentIsKorean
+            let sources = self.selectableKeyboardSources()
+            let targetSource = targetIsKorean
+                ? self.findBestKoreanSource(in: sources)
+                : self.findBestEnglishSource(in: sources)
 
             guard let target = targetSource else { return }
             let targetID = self.stringProperty(target, kTISPropertyInputSourceID) ?? ""
             let targetName = self.stringProperty(target, kTISPropertyLocalizedName) ?? targetID
 
+            self.expectedIsKorean = targetIsKorean
+            self.lastToggleTimestamp = now
+            self.toggleGeneration &+= 1
+            let gen = self.toggleGeneration
+
             let status = TISSelectInputSource(target)
             if status == noErr {
-                self.lastToggleTimestamp = ProcessInfo.processInfo.systemUptime
                 self.lastReportedID = targetID
-                let info = SourceInfo(id: targetID, name: targetName, isKorean: self.isKoreanSourceID(targetID))
+                let info = SourceInfo(id: targetID, name: targetName, isKorean: targetIsKorean)
                 self.recordHistory(info)
                 self.onSourceChanged?(info, true)
+            }
+
+            // Verify & retry if KoreanIME absorbed the first switch while committing a syllable
+            for delay in [0.025, 0.060] {
+                let item = DispatchWorkItem { [weak self] in
+                    guard let self = self, self.toggleGeneration == gen else { return }
+                    let actual = self.currentSourceInfo()
+                    if actual.id != targetID && actual.isKorean != targetIsKorean {
+                        _ = TISSelectInputSource(target)
+                    }
+                }
+                self.retryWorkItems.append(item)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
             }
         }
 
@@ -565,13 +595,16 @@ final class InputSourceManager {
             let info = self.currentSourceInfo()
             self.recordHistory(info)
 
-            // Avoid duplicate HUD trigger right after our own TISSelectInputSource call
+            // Avoid stale transient notifications or duplicate HUD right after our own toggle
             let elapsed = ProcessInfo.processInfo.systemUptime - self.lastToggleTimestamp
-            if elapsed < 0.20 && info.id == self.lastReportedID {
-                self.onSourceChanged?(info, false)
+            if elapsed < 0.28 {
+                if info.id == self.lastReportedID || info.isKorean == self.expectedIsKorean {
+                    self.onSourceChanged?(info, false)
+                }
                 return
             }
 
+            self.expectedIsKorean = nil
             let changed = (info.id != self.lastReportedID)
             self.lastReportedID = info.id
             self.onSourceChanged?(info, changed)
@@ -817,7 +850,8 @@ final class HotKeyEngine {
     static let shared = HotKeyEngine()
 
     private var eventHandlerRef: EventHandlerRef?
-    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
+    private var hotKeyRefs: [EventHotKeyRef] = []
+    private var nextExtraHotKeyID: UInt32 = 100
     private let signature: OSType = fourCharCode("KSWT")
     private var isPausedForRecording = false
 
@@ -853,8 +887,8 @@ final class HotKeyEngine {
         let settings = AppSettings.shared
 
         if settings.pcHangulKeyEnabled {
-            registerHotKey(id: .f18Bridge, keyCode: UInt32(kVK_F18), modifiers: 0)
-            registerHotKey(id: .jisKana, keyCode: UInt32(kVK_JIS_Kana), modifiers: 0)
+            registerHangulHotKeys(baseID: .f18Bridge, keyCode: UInt32(kVK_F18))
+            registerHangulHotKeys(baseID: .jisKana, keyCode: UInt32(kVK_JIS_Kana))
         }
 
         if settings.pcHanjaKeyEnabled {
@@ -953,9 +987,30 @@ final class HotKeyEngine {
         )
     }
 
+    private func registerHangulHotKeys(baseID: HotKeyID, keyCode: UInt32) {
+        registerHotKey(rawID: baseID.rawValue, keyCode: keyCode, modifiers: 0)
+        // Catch fast-typing modifier overlaps (e.g., Shift still held from double consonant or '?')
+        let overlapModifiers: [UInt32] = [
+            UInt32(shiftKey),
+            UInt32(optionKey),
+            UInt32(cmdKey),
+            UInt32(shiftKey | optionKey),
+            UInt32(shiftKey | cmdKey)
+        ]
+        for mods in overlapModifiers {
+            let id = nextExtraHotKeyID
+            nextExtraHotKeyID &+= 1
+            registerHotKey(rawID: id, keyCode: keyCode, modifiers: mods)
+        }
+    }
+
     private func registerHotKey(id: HotKeyID, keyCode: UInt32, modifiers: UInt32) {
+        registerHotKey(rawID: id.rawValue, keyCode: keyCode, modifiers: modifiers)
+    }
+
+    private func registerHotKey(rawID: UInt32, keyCode: UInt32, modifiers: UInt32) {
         var hotKeyRef: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: signature, id: id.rawValue)
+        let hotKeyID = EventHotKeyID(signature: signature, id: rawID)
         let status = RegisterEventHotKey(
             keyCode,
             modifiers,
@@ -965,15 +1020,16 @@ final class HotKeyEngine {
             &hotKeyRef
         )
         if status == noErr, let ref = hotKeyRef {
-            hotKeyRefs[id.rawValue] = ref
+            hotKeyRefs.append(ref)
         }
     }
 
     private func unregisterAllHotKeys() {
-        for (_, ref) in hotKeyRefs {
+        for ref in hotKeyRefs {
             UnregisterEventHotKey(ref)
         }
         hotKeyRefs.removeAll()
+        nextExtraHotKeyID = 100
     }
 
     private func carbonModifiers(fromCocoaFlags flags: NSEvent.ModifierFlags) -> UInt32 {
@@ -1294,7 +1350,7 @@ final class DashboardWindowController: NSWindowController, NSWindowDelegate {
         titleStack.alignment = .leading
         titleStack.spacing = 2
 
-        let titleLabel = NSTextField(labelWithString: "KSwitch 맥한영 v1.2")
+        let titleLabel = NSTextField(labelWithString: "KSwitch 맥한영 v1.2.1")
         titleLabel.font = NSFont.systemFont(ofSize: 19, weight: .bold)
 
         let subtitleLabel = NSTextField(labelWithString: "일반 PC 키보드 한/영 · 한자 · Ctrl · Win · Home/End")
